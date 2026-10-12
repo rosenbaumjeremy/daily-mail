@@ -6,6 +6,7 @@
 //   GET  /confirm?c=            the link in that email: the subscription starts
 //   GET  /m?t=  POST /m         change what you get (link in every email)
 //   GET  /u?t=  POST /u         unsubscribe (also the one-click List-Unsubscribe)
+//   POST /preview?site=&freq=   a sample email, to the owner (NOTIFY_EMAIL) only
 //
 // Every confirmed sign-up is also reported to NOTIFY_EMAIL (the owner) in a
 // separate email the reader never sees.
@@ -366,6 +367,42 @@ export async function daily(env, when = new Date()) {
   return report;
 }
 
+/** POST /preview?site=&freq=weekly|daily — a sample of what readers get, sent
+    only to NOTIFY_EMAIL (the owner), never to anyone else; at most 3 an hour.
+    Uses the owner's own choices for that site if subscribed, else every section.
+    Weekly: the most recent full week (the 7 days ending the last WEEK_DAY). */
+async function preview(url, env, when = new Date()) {
+  const site = url.searchParams.get("site") || "aliyah";
+  const weekly = url.searchParams.get("freq") !== "daily";
+  const s = SITES[site];
+  if (!s || !env.NOTIFY_EMAIL) return new Response("unknown site", { status: 400 });
+  const hourAgo = new Date(when.getTime() - 36e5).toISOString();
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM sent WHERE site = 'preview' AND at > ?").bind(hourAgo).first();
+  if (recent.n >= 3) return new Response("too many previews this hour", { status: 429 });
+
+  const today = israel(when).date;
+  const weekDay = Number(env.WEEK_DAY ?? 5);
+  let end = today;
+  while (new Date(end + "T12:00:00Z").getUTCDay() !== weekDay) end = addDays(end, -1);
+  const index = await getJson(`${s.url}/${s.index}`);
+  const from = weekly ? addDays(end, -6) : today;
+  const until = weekly ? end : today;
+  const days = index.days.filter((d) => d.date >= from && d.date <= until)
+    .sort((x, y) => x.date.localeCompare(y.date) || String(x.file || "").localeCompare(String(y.file || "")));
+  if (!days.length) return new Response(`no briefs for ${from}..${until}`, { status: 404 });
+  const records = await Promise.all(days.map((d) => getJson(`${s.url}/${s.file(d)}`)));
+
+  const own = await env.DB.prepare("SELECT * FROM subs WHERE email = ? AND site = ?").bind(env.NOTIFY_EMAIL.toLowerCase(), site).first();
+  const sub = own || { email: env.NOTIFY_EMAIL, lang: "he", sections: keysOf(site).join(","), token: "preview" };
+  const [mail] = messagesFor(env, site, [sub], records, weekly);
+  mail.to = env.NOTIFY_EMAIL;
+  mail.subject = `[ניסיון] ${mail.subject}`;
+  await env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES ('preview', ?, 1, ?)").bind(crypto.randomUUID(), when.toISOString()).run();
+  await send(env, [mail]);
+  return new Response(`sent a ${weekly ? "weekly" : "daily"} ${site} preview (${records.length} days, ${from}..${until}) to the owner`,
+    { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+}
+
 export default {
   async fetch(request, env) {
     await setup(env.DB);
@@ -383,6 +420,7 @@ export default {
       if (url.pathname === "/confirm") return await confirm(url, env);
       if (url.pathname === "/m") return await manage(request, url, env);
       if (url.pathname === "/u") return await unsubscribe(request, url, env);
+      if (url.pathname === "/preview" && request.method === "POST") return await preview(url, env);
       if (url.pathname === "/") return new Response("daily-mail", { headers: { "Content-Type": "text/plain" } });
       return new Response("not found", { status: 404 });
     } catch (error) {

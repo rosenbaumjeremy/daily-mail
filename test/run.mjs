@@ -197,3 +197,12 @@ outbox.splice(0);
 await daily(env, new Date("2026-10-10T19:15:00Z"));
 await daily(env, new Date("2026-10-11T04:30:00Z"));    // Sunday 07:30: Sunday's brief only
 ok(outbox.length === 1 && outbox[0].text.includes("2026-10-11"), "Sunday morning: only Sunday's brief");
+
+// preview: only ever to the owner, rate-limited
+outbox.splice(0);
+r = await call("/preview?site=aliyah&freq=weekly&to=attacker@example.com", { method: "POST" });
+ok(r.status === 200 && outbox.length === 1 && outbox[0].to[0] === "owner@example.com" && outbox[0].subject.startsWith("[ניסיון]"), "preview goes to the owner only: " + await r.text());
+ok((outbox[0].html.match(/<h2 style="margin:8px 0 2px/g) || []).length >= 5, "preview is a whole week");
+await call("/preview?site=mishna", { method: "POST" }); await call("/preview?site=tanach", { method: "POST" });
+ok((await call("/preview?site=aliyah", { method: "POST" })).status === 429, "4th preview in an hour refused");
+ok((await call("/preview?site=aliyah")).status === 404, "GET does not send");
