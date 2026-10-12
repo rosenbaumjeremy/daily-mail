@@ -118,7 +118,8 @@ ok((await call("/m?t=" + token)).status === 404, "gone after unsubscribing");
 // a wrong app password: the sign-up reports a failure instead of pretending
 setConnect(fakeGmail({ user: env.GMAIL_USER, password: "wrong", outbox }));
 r = await signup({ email: "late@example.com", site: "aliyah", sections: ["summary"] });
-ok(r.status === 500, "a wrong app password shows as an error");
+ok(r.status === 502 && (await r.json()).detail.includes("535"), "a wrong app password is reported");
+ok(!sql.prepare("SELECT 1 FROM pending WHERE email = 'late@example.com'").get(), "a failed sign-up does not count toward the limit");
 // many readers: one connection per 40 messages; a Gmail refusal is reported, not hidden
 setConnect(gmail);
 for (let i = 0; i < 85; i++) sql.prepare("INSERT INTO subs VALUES (?, 'tanach', 'he', 'summary', ?, '')").run(`r${i}@example.com`, `tok${i}`);

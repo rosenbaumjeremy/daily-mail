@@ -128,12 +128,21 @@ async function subscribe(request, env, origin) {
   const w = WORDS[lang];
   const link = `${env.PUBLIC_URL}/confirm?c=${code}`;
   const dir = lang === "he" ? "rtl" : "ltr";
-  await send(env, [{
+  const confirmation = {
     to: email, subject: w.confirmSubject(name),
     html: `<div dir="${dir}" style="font-family:Arial,sans-serif;font-size:15px;color:#1e1c1a;max-width:520px">
 <p>${esc(w.confirmBody(name))}</p><p><a href="${link}" style="background:#16305c;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:700">${esc(w.confirmButton)}</a></p></div>`,
     text: `${w.confirmBody(name)}\n\n${link}`,
-  }]);
+  };
+  try {
+    await send(env, [confirmation]);
+  } catch (error) {
+    // not sent: it does not count toward the day's limit, and the reason is
+    // logged and returned (Gmail's reply, or a missing setting; never the password)
+    await env.DB.prepare("DELETE FROM pending WHERE code = ?").bind(code).run();
+    console.error("confirmation:", error.message);
+    return json({ error: "send", detail: error.message.slice(0, 200) }, 502, origin);
+  }
   return json({ ok: true }, 200, origin);
 }
 
@@ -219,6 +228,7 @@ async function unsubscribe(request, url, env) {
 /* ---------- sending ---------- */
 
 async function send(env, messages) {
+  if (!env.GMAIL_USER || !env.GMAIL_APP_PASSWORD) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD is not set");
   const account = { user: env.GMAIL_USER, password: env.GMAIL_APP_PASSWORD, fromName: env.FROM_NAME, replyTo: env.REPLY_TO };
   // a fresh connection every 40 messages, well inside what Gmail takes on one
   for (let i = 0; i < messages.length; i += 40) await sendSmtp(connect, account, messages.slice(i, i + 40));

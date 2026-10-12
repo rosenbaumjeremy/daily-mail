@@ -5,6 +5,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-12",
   "workers_dev": true,
+  // logs in the dashboard (the worker's Observability tab)
+  "observability": { "enabled": true },
   // every hour from 03:15 to 09:15 UTC; the worker itself sends at SEND_HOUR Israel time
   "triggers": { "crons": ["15 3-9 * * *"] },
   "d1_databases": [
