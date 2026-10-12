@@ -1,0 +1,23 @@
+{
+  // Cloudflare Workers project (Workers Builds): pushing to main deploys.
+  // Sign-ups for the study sites' daily emails, and the morning sending.
+  "name": "daily-mail",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-12",
+  "workers_dev": true,
+  // every hour from 03:15 to 09:15 UTC; the worker itself sends at SEND_HOUR Israel time
+  "triggers": { "crons": ["15 3-9 * * *"] },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "daily-mail", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }
+  ],
+  "vars": {
+    "PUBLIC_URL": "https://daily-mail.dailylearning.workers.dev",
+    // the sender; its domain must be verified in Resend
+    "FROM": "לימוד יומי <daily@REPLACE_WITH_YOUR_DOMAIN>",
+    "REPLY_TO": "rosenbaum.jeremy@gmail.com",
+    "SEND_HOUR": "7",
+    // gets a separate note for every confirmed sign-up (readers never see it)
+    "NOTIFY_EMAIL": "rosenbaum.jeremy@gmail.com"
+  }
+  // secret, set in the Cloudflare dashboard (Settings > Variables and Secrets): RESEND_API_KEY
+}
