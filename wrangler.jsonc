@@ -8,7 +8,7 @@
   // every hour from 03:15 to 09:15 UTC; the worker itself sends at SEND_HOUR Israel time
   "triggers": { "crons": ["15 3-9 * * *"] },
   "d1_databases": [
-    { "binding": "DB", "database_name": "daily-mail", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }
+    { "binding": "DB", "database_name": "daily-mail", "database_id": "43ae5629-e739-490f-afec-44157d1cdb6b" }
   ],
   "vars": {
     "PUBLIC_URL": "https://daily-mail.dailylearning.workers.dev",
