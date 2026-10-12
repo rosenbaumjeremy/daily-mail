@@ -4,7 +4,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import worker, { daily } from "../src/worker.js";
+import worker, { daily, setConnect } from "../src/worker.js";
+import { fakeGmail } from "./fake-gmail.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const GIT = here + "../../";
@@ -27,10 +28,6 @@ const DB = { prepare: (q) => stmt(q), batch: async (list) => { for (const s of l
 const outbox = [];
 globalThis.fetch = async (url, init = {}) => {
   url = String(url);
-  if (url.startsWith("https://api.resend.com/")) {
-    outbox.push(...JSON.parse(init.body));
-    return new Response(JSON.stringify({ data: [] }), { status: 200 });
-  }
   for (const [origin, dir] of Object.entries(LOCAL)) if (url.startsWith(origin)) {
     const path = dir + url.slice(origin.length + 1).split("?")[0];
     return existsSync(path) ? new Response(readFileSync(path)) : new Response("", { status: 404 });
@@ -38,7 +35,10 @@ globalThis.fetch = async (url, init = {}) => {
   throw new Error("unexpected fetch " + url);
 };
 
-const env = { DB, PUBLIC_URL: "https://daily-mail.test", FROM: "Test <t@example.com>", SEND_HOUR: "7", RESEND_API_KEY: "x", NOTIFY_EMAIL: "owner@example.com" };
+const env = { DB, PUBLIC_URL: "https://daily-mail.test", GMAIL_USER: "sender@gmail.com", GMAIL_APP_PASSWORD: "abcd efgh ijkl mnop",
+  FROM_NAME: "לימוד יומי", SEND_HOUR: "7", NOTIFY_EMAIL: "owner@example.com" };
+const gmail = fakeGmail({ user: env.GMAIL_USER, password: env.GMAIL_APP_PASSWORD, outbox });
+setConnect(gmail);
 const call = (path, init) => worker.fetch(new Request("https://daily-mail.test" + path, init), env);
 const ok = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exitCode = 1; } else console.log("ok -", msg); };
 const SITE = "https://aliyah-yomit.dailylearning.workers.dev";
@@ -68,6 +68,7 @@ for (const [email, site, lang, sections] of readers) {
   ok(r.status === 200, `signed up ${email}`);
 }
 ok(outbox.length === readers.length, "one confirmation email each");
+ok(outbox[0].from === "לימוד יומי <sender@gmail.com>" && outbox[0].subject.startsWith("אישור הרשמה"), "from the Gmail account, Hebrew subject intact");
 const code = (m) => m.html.match(/confirm\?c=([0-9a-f]+)/)[1];
 for (const m of outbox.splice(0)) {
   r = await call("/confirm?c=" + code(m));
@@ -113,3 +114,19 @@ ok((await r.text()).includes('method="post"'), "unsubscribe asks first");
 r = await call("/u?t=" + token, { method: "POST", body: "List-Unsubscribe=One-Click", headers: { "Content-Type": "application/x-www-form-urlencoded" } });
 ok(r.status === 200, "one-click unsubscribe");
 ok((await call("/m?t=" + token)).status === 404, "gone after unsubscribing");
+
+// a wrong app password: the sign-up reports a failure instead of pretending
+setConnect(fakeGmail({ user: env.GMAIL_USER, password: "wrong", outbox }));
+r = await signup({ email: "late@example.com", site: "aliyah", sections: ["summary"] });
+ok(r.status === 500, "a wrong app password shows as an error");
+// many readers: one connection per 40 messages; a Gmail refusal is reported, not hidden
+setConnect(gmail);
+for (let i = 0; i < 85; i++) sql.prepare("INSERT INTO subs VALUES (?, 'tanach', 'he', 'summary', ?, '')").run(`r${i}@example.com`, `tok${i}`);
+outbox.splice(0); gmail.connections.length = 0;
+sql.prepare("DELETE FROM sent").run();
+report = await daily(env, new Date("2026-10-11T04:30:00Z"));
+ok(gmail.connections.length === 5 && outbox.length === 89, `89 emails (86 on one site) over ${gmail.connections.length} connections`);
+const limited = []; setConnect(fakeGmail({ user: env.GMAIL_USER, password: env.GMAIL_APP_PASSWORD, outbox: limited, failAfter: 10 }));
+sql.prepare("DELETE FROM sent").run();
+report = await daily(env, new Date("2026-10-11T04:30:00Z"));
+ok(limited.length === 10 && report.some((x) => x.includes("quota") && / of \d+ sent/.test(x)), "quota refusal reported: " + report.find((x) => x.includes("quota")));

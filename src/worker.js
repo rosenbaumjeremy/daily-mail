@@ -12,10 +12,16 @@
 //
 // The cron runs hourly in the morning; once a site's brief for today (Israel
 // date) is up and it is SEND_HOUR or later in Israel, each confirmed reader of
-// that site gets it once. Sending is through Resend (RESEND_API_KEY secret).
+// that site gets it once. Sending is through a Gmail account over SMTP:
+// GMAIL_USER (the address) and the secret GMAIL_APP_PASSWORD (a Google app password).
 
 import { SITES, optionsFor, cleanSections, keysOf } from "./sites.js";
 import { renderEmail } from "./render.js";
+import { sendSmtp } from "./smtp.js";
+
+// cloudflare:sockets' connect; set by index.js (the entry point), or by a test
+let connect = null;
+export const setConnect = (fn) => { connect = fn; };
 
 const ORIGINS = new Set(Object.values(SITES).map((s) => s.url));
 
@@ -213,15 +219,9 @@ async function unsubscribe(request, url, env) {
 /* ---------- sending ---------- */
 
 async function send(env, messages) {
-  // Resend takes up to 100 emails per batch call
-  for (let i = 0; i < messages.length; i += 100) {
-    const batch = messages.slice(i, i + 100).map((m) => ({ from: env.FROM, to: [m.to], subject: m.subject,
-      html: m.html, text: m.text, ...(m.headers ? { headers: m.headers } : {}), ...(env.REPLY_TO ? { reply_to: env.REPLY_TO } : {}) }));
-    const res = await fetch("https://api.resend.com/emails/batch", {
-      method: "POST", headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(batch) });
-    if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  }
+  const account = { user: env.GMAIL_USER, password: env.GMAIL_APP_PASSWORD, fromName: env.FROM_NAME, replyTo: env.REPLY_TO };
+  // a fresh connection every 40 messages, well inside what Gmail takes on one
+  for (let i = 0; i < messages.length; i += 40) await sendSmtp(connect, account, messages.slice(i, i + 40));
 }
 
 async function getJson(url) {
@@ -248,10 +248,15 @@ export async function daily(env, when = new Date()) {
       const record = await getJson(`${s.url}/${s.file(day)}`);
       // claim the day first, so a crash part-way through never sends anyone the brief twice
       await env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES (?, ?, ?, ?)").bind(site, date, subs.length, now()).run();
+      // each choice of sections is drawn once; only the reader's own links differ
+      const drawn = new Map();
       const messages = subs.map((sub) => {
         const manage = `${env.PUBLIC_URL}/m?t=${sub.token}`, stop = `${env.PUBLIC_URL}/u?t=${sub.token}`;
-        const mail = renderEmail(site, record, sub.lang, sub.sections.split(","), { manage, stop });
-        return { to: sub.email, ...mail, headers: {
+        const key = `${sub.lang}|${sub.sections}`;
+        if (!drawn.has(key)) drawn.set(key, renderEmail(site, record, sub.lang, sub.sections.split(","), { manage: "%%MANAGE%%", stop: "%%STOP%%" }));
+        const own = (text) => text.replaceAll("%%MANAGE%%", manage).replaceAll("%%STOP%%", stop);
+        const mail = drawn.get(key);
+        return { to: sub.email, subject: mail.subject, html: own(mail.html), text: own(mail.text), headers: {
           "List-Unsubscribe": `<${stop}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } };
       });
       await send(env, messages);

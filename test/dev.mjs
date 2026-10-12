@@ -1,10 +1,11 @@
-// Local preview: a study site and the worker on one port, with a fake Resend
+// Local preview: a study site and the worker on one port, with a fake Gmail
 // that prints each email. node test/dev.mjs <aliyah|tanach|mishna> [port]
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import worker from "../src/worker.js";
+import worker, { setConnect } from "../src/worker.js";
+import { fakeGmail } from "./fake-gmail.mjs";
 
 const site = process.argv[2] || "aliyah";
 const port = Number(process.argv[3] || 8790);
@@ -15,15 +16,13 @@ const stmt = (q, args = []) => ({ bind: (...a) => stmt(q, a),
   run: async () => { sql.prepare(q).run(...args); return {}; },
   first: async () => sql.prepare(q).get(...args) ?? null, all: async () => ({ results: sql.prepare(q).all(...args) }) });
 const DB = { prepare: (q) => stmt(q), batch: async (l) => { for (const s of l) await s.run(); } };
-const realFetch = globalThis.fetch;
-globalThis.fetch = async (url, init) => {
-  if (String(url).startsWith("https://api.resend.com/")) {
-    for (const m of JSON.parse(init.body)) console.log(`[mail] to ${m.to} — ${m.subject}\n${m.text}\n`);
-    return new Response("{}");
-  }
-  return realFetch(url, init);
-};
-const env = { DB, PUBLIC_URL: `http://localhost:${port}`, FROM: "test", SEND_HOUR: "7" };
+// a fake Gmail that prints each email instead of sending it
+const outbox = [];
+outbox.push = (...mails) => { for (const m of mails) console.log(`[mail] to ${m.to} — ${m.subject}
+${m.text}
+`); return 0; };
+setConnect(fakeGmail({ user: "test@gmail.com", password: "test", outbox }));
+const env = { DB, PUBLIC_URL: `http://localhost:${port}`, GMAIL_USER: "test@gmail.com", GMAIL_APP_PASSWORD: "test", SEND_HOUR: "7" };
 const TYPES = { html: "text/html", js: "text/javascript", css: "text/css", json: "application/json", svg: "image/svg+xml" };
 
 createServer(async (req, res) => {
