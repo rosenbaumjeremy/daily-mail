@@ -206,3 +206,12 @@ ok((outbox[0].html.match(/<h2 style="margin:8px 0 2px/g) || []).length >= 5, "pr
 await call("/preview?site=mishna", { method: "POST" }); await call("/preview?site=tanach", { method: "POST" });
 ok((await call("/preview?site=aliyah", { method: "POST" })).status === 429, "4th preview in an hour refused");
 ok((await call("/preview?site=aliyah")).status === 404, "GET does not send");
+
+// on Cloudflare the sites come through service bindings, not fetch
+{
+  const seen = [];
+  const bound = { ...env, ALIYAH: { fetch: async (u) => { seen.push(String(u)); return globalThis.fetch(u); } } };
+  sql.prepare("DELETE FROM sent").run();
+  r = await worker.fetch(new Request("https://daily-mail.test/preview?site=aliyah", { method: "POST" }), bound);
+  ok(seen.some((u) => u.includes("/data/aliyot/index.json")), "the aliyah site is read through its binding");
+}

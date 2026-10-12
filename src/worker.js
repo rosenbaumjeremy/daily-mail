@@ -258,8 +258,14 @@ async function send(env, messages) {
   for (let i = 0; i < messages.length; i += 40) await sendSmtp(connect, account, messages.slice(i, i + 40));
 }
 
-async function getJson(url) {
-  const res = await fetch(`${url}?v=${Date.now()}`, { cf: { cacheTtl: 0 } });
+// A site's file. On Cloudflare a worker cannot fetch another worker's
+// workers.dev address on the same account (404), so each site comes through its
+// service binding (wrangler.jsonc "services", named in SITES[*].binding);
+// without one (tests) it is a normal fetch.
+async function getJson(env, site, url) {
+  const binding = env[SITES[site].binding];
+  const target = `${url}?v=${Date.now()}`;
+  const res = binding ? await binding.fetch(target) : await fetch(target, { cf: { cacheTtl: 0 } });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   return res.json();
 }
@@ -332,11 +338,11 @@ export async function daily(env, when = new Date()) {
       const doWeekly = weeklySubs.length > 0 && !(await sentAlready(`${site}:week`, weekEnd));
       if (!days.length && !doWeekly) continue;
 
-      const index = await getJson(`${s.url}/${s.index}`);
+      const index = await getJson(env, site, `${s.url}/${s.index}`);
       const files = new Map();   // each brief fetched once
       const load = (day) => {
         const file = s.file(day);
-        if (!files.has(file)) files.set(file, getJson(`${s.url}/${file}`));
+        if (!files.has(file)) files.set(file, getJson(env, site, `${s.url}/${file}`));
         return files.get(file);
       };
 
@@ -384,13 +390,13 @@ async function preview(url, env, when = new Date()) {
   const weekDay = Number(env.WEEK_DAY ?? 5);
   let end = today;
   while (new Date(end + "T12:00:00Z").getUTCDay() !== weekDay) end = addDays(end, -1);
-  const index = await getJson(`${s.url}/${s.index}`);
+  const index = await getJson(env, site, `${s.url}/${s.index}`);
   const from = weekly ? addDays(end, -6) : today;
   const until = weekly ? end : today;
   const days = index.days.filter((d) => d.date >= from && d.date <= until)
     .sort((x, y) => x.date.localeCompare(y.date) || String(x.file || "").localeCompare(String(y.file || "")));
   if (!days.length) return new Response(`no briefs for ${from}..${until}`, { status: 404 });
-  const records = await Promise.all(days.map((d) => getJson(`${s.url}/${s.file(d)}`)));
+  const records = await Promise.all(days.map((d) => getJson(env, site, `${s.url}/${s.file(d)}`)));
 
   const own = await env.DB.prepare("SELECT * FROM subs WHERE email = ? AND site = ?").bind(env.NOTIFY_EMAIL.toLowerCase(), site).first();
   const sub = own || { email: env.NOTIFY_EMAIL, lang: "he", sections: keysOf(site).join(","), token: "preview" };

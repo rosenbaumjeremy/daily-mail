@@ -10,6 +10,13 @@
   // mornings 03:15-09:15 UTC, and 18:15 + 19:15 UTC (21:15 Israel in summer / winter)
   // for Shabbat and Yom Tov; the worker itself decides what is due (SEND_HOUR, HOLY_HOUR)
   "triggers": { "crons": ["15 3-9,18,19 * * *"] },
+  // the study sites, reached directly: a worker cannot fetch another
+  // worker's workers.dev address on the same account
+  "services": [
+    { "binding": "ALIYAH", "service": "aliyah-yomit" },
+    { "binding": "TANACH", "service": "tanach-summaries" },
+    { "binding": "MISHNA", "service": "mishna-yomit" }
+  ],
   "d1_databases": [
     { "binding": "DB", "database_name": "daily-mail", "database_id": "43ae5629-e739-490f-afec-44157d1cdb6b" }
   ],

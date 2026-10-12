@@ -33,6 +33,7 @@ export const LABELS = {
 export const SITES = {
   aliyah: {
     url: "https://aliyah-yomit.dailylearning.workers.dev",
+    binding: "ALIYAH",   // service binding in wrangler.jsonc
     name: { he: "פרשת השבוע", en: "Parashat HaShavua" },
     index: "data/aliyot/index.json",
     file: (day) => `data/aliyot/${day.file || day.date}.json`,
@@ -55,6 +56,7 @@ export const SITES = {
   },
   tanach: {
     url: "https://tanach-summaries.dailylearning.workers.dev",
+    binding: "TANACH",   // service binding in wrangler.jsonc
     name: { he: "שניים ליום", en: "Shnayim LaYom" },
     index: "data/questions/index.json",
     file: (day) => `data/questions/${day.date}.json`,
@@ -74,6 +76,7 @@ export const SITES = {
   },
   mishna: {
     url: "https://mishna-yomit.dailylearning.workers.dev",
+    binding: "MISHNA",   // service binding in wrangler.jsonc
     name: { he: "משנה יומית", en: "Mishnah Yomit" },
     index: "data/perakim/index.json",
     file: (day) => `data/perakim/${day.masechet}-${day.perek}.json`,
