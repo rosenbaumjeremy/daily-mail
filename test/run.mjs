@@ -1,5 +1,5 @@
 // Runs the worker in Node against an in-memory database, the briefs in the
-// local site folders, and a fake Resend, then writes the emails to test/out/.
+// local site folders, and a fake Gmail (test/fake-gmail.mjs), then writes the emails to test/out/.
 //   node test/run.mjs
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
