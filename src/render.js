@@ -14,12 +14,12 @@ const sefaria = (ref) => `https://www.sefaria.org/${encodeURIComponent(String(re
 const TEXT = {
   he: {
     askedBy: "שואלים", answer: (i) => `תירוץ ${"אבגדהוזחטי"[i] || i + 1}`, why: "למה זה חשוב",
-    synthesis: "סינתזה שלנו", open: "לקריאה באתר", manage: "שינוי הבחירות", stop: "הפסקת המיילים",
+    synthesis: "סינתזה שלנו", open: "לקריאה באתר", week: "סיכום שבועי", manage: "שינוי הבחירות", stop: "הפסקת המיילים",
     footer: (name) => `קיבלתם מייל זה כי נרשמתם ל${name} במייל.`,
   },
   en: {
     askedBy: "Asked by", answer: (i) => `Answer ${i + 1}`, why: "Why it matters",
-    synthesis: "our synthesis", open: "Read it on the site", manage: "Change what you get", stop: "Unsubscribe",
+    synthesis: "our synthesis", open: "Read it on the site", week: "This week", manage: "Change what you get", stop: "Unsubscribe",
     footer: (name) => `You get this email because you signed up for ${name} by email.`,
   },
 };
@@ -54,32 +54,27 @@ function question(q, i, t, withAnswers) {
   return out + "</div>";
 }
 
-/** site: key of SITES; record: the brief file; lang "he" | "en"; sections: chosen keys;
-    links: { manage, stop } URLs for this reader. */
-export function renderEmail(site, record, lang, sections, links) {
+// the chosen sections of one day's brief; small = headings one size down (inside a weekly email)
+function sectionsHtml(site, record, lang, want, t, small) {
   const s = SITES[site];
-  const t = TEXT[lang];
-  const want = new Set(sections);
   const brief = record[lang === "he" ? "hebrew" : "english"] || record.hebrew || record.english;
-  const dir = lang === "he" ? "rtl" : "ltr";
-  const title = s.title(record, lang);
-  const date = record.hebrew_date ? record.hebrew_date[lang === "he" ? "hebrew" : "english"] : record.date;
-  const pageUrl = s.url + "/" + s.link(record, lang);
-
+  const head = (text) => (small
+    ? `<h3 style="margin:14px 0 6px;font-size:15px;color:${NAVY}">${esc(text)}</h3>`
+    : H(text));
   let body = "";
   for (const o of s.options) {
     if (!want.has(o.key)) continue;
-    const head = H(label(site, o.key, lang));
+    const h = head(label(site, o.key, lang));
     if (o.key === "summary" && brief.summary) {
-      body += head + brief.summary.split(/\n+/).map((p) => P(esc(p))).join("");
+      body += h + brief.summary.split(/\n+/).map((p) => P(esc(p))).join("");
     } else if (o.key === "text" && record.mishnayot) {
-      body += head + record.mishnayot.map((m, i) => {
+      body += h + record.mishnayot.map((m, i) => {
         let one = P(`<b style="color:${GOLD}">${HEB_NUM(i + 1)}</b> ${heb(strip(m.he))}`, "font-size:17px");
         if (lang === "en" && m.en) one += P(esc(strip(m.en)), `color:${MUTED};font-size:14px`);
         return one;
       }).join("");
     } else if (o.key === "topics" && (brief.topics || []).length) {
-      body += head + brief.topics.map((x) => {
+      body += h + brief.topics.map((x) => {
         let one = `<div style="font-weight:700;color:${NAVY};margin-top:8px">◆ ${esc(x.term)}</div>`;
         if (want.has("explain")) one += P(esc(x.explanation), "margin-bottom:2px") + (x.source ? cite(x.source) : "");
         return one;
@@ -87,41 +82,76 @@ export function renderEmail(site, record, lang, sections, links) {
     } else if (o.key === "questions" && (brief.questions || []).length) {
       // "Questions & answers" when the answers come too (a site's own heading, e.g. Mishnah's, stays)
       const own = (s.labels[lang] || {}).questions;
-      const heading = want.has("answers") && !own ? H(lang === "he" ? "שאלות ותשובות" : "Questions & answers") : head;
+      const heading = want.has("answers") && !own ? head(lang === "he" ? "שאלות ותשובות" : "Questions & answers") : h;
       body += heading + brief.questions.map((q, i) => question(q, i, t, want.has("answers"))).join("");
     } else if (o.key === "sources" && (brief.sources_consulted || []).length) {
-      body += head + P(esc(brief.sources_consulted.join(" · ")), `color:${MUTED};font-size:14px`);
+      body += h + P(esc(brief.sources_consulted.join(" · ")), `color:${MUTED};font-size:14px`);
     }
   }
+  return body;
+}
 
-  const button = `<a href="${esc(pageUrl)}" style="display:inline-block;background:${NAVY};color:#fff;text-decoration:none;padding:8px 16px;border-radius:8px;font-weight:700">${esc(t.open)}</a>`;
+const dateOf = (record, lang) => (record.hebrew_date ? record.hebrew_date[lang === "he" ? "hebrew" : "english"] : record.date);
+const pageOf = (site, record, lang) => SITES[site].url + "/" + SITES[site].link(record, lang);
+const button = (url, text) => `<a href="${esc(url)}" style="display:inline-block;background:${NAVY};color:#fff;text-decoration:none;padding:8px 16px;border-radius:8px;font-weight:700">${esc(text)}</a>`;
+
+/** site: key of SITES; records: the brief files (one for a daily email, the
+    week's for a weekly one, oldest first); lang "he" | "en"; sections: chosen
+    keys; links: { manage, stop } URLs for this reader; weekly: true for the week. */
+export function renderEmail(site, records, lang, sections, links, weekly = false) {
+  const s = SITES[site];
+  const t = TEXT[lang];
+  const want = new Set(sections);
+  const dir = lang === "he" ? "rtl" : "ltr";
+  const first = records[0], last = records[records.length - 1];
+  let title, sub, body;
+
+  if (!weekly) {
+    title = s.title(first, lang);
+    sub = `${dateOf(first, lang)} · ${first.date}`;
+    body = sectionsHtml(site, first, lang, want, t, false)
+      + `<div style="margin:22px 0 10px">${button(pageOf(site, first, lang), t.open)}</div>`;
+  } else {
+    title = s.weekTitle ? s.weekTitle(records, lang) : `${s.title(first, lang)} – ${s.title(last, lang)}`;
+    sub = `${t.week} · ${dateOf(first, lang)} – ${dateOf(last, lang)}`;
+    body = records.map((r) => `<div style="margin:26px 0 0;padding-top:4px;border-top:3px solid ${GOLD}">
+<h2 style="margin:8px 0 2px;font-size:19px;color:${NAVY}">${esc(s.title(r, lang))}</h2>
+<div style="font-size:13px;color:${MUTED};margin-bottom:4px">${esc(dateOf(r, lang))} · ${esc(r.date)} · <a href="${esc(pageOf(site, r, lang))}" style="color:${NAVY}">${esc(t.open)}</a></div>
+${sectionsHtml(site, r, lang, want, t, true)}</div>`).join("\n");
+  }
+
   const html = `<!doctype html><html lang="${lang}" dir="${dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head>
 <body style="margin:0;padding:0;background:${BEIGE}">
 <div dir="${dir}" style="max-width:640px;margin:0 auto;padding:18px 16px;font-family:Arial,'Segoe UI',sans-serif;font-size:15px;color:${INK};text-align:${lang === "he" ? "right" : "left"}">
 <div style="border-bottom:3px solid ${NAVY};padding-bottom:8px;margin-bottom:6px">
 <div style="font-size:13px;color:${GOLD};font-weight:700">${esc(s.name[lang])}</div>
 <h1 style="margin:2px 0 2px;font-size:22px;color:${NAVY}">${esc(title)}</h1>
-<div style="font-size:13px;color:${MUTED}">${esc(date)} · ${esc(record.date)}</div>
+<div style="font-size:13px;color:${MUTED}">${esc(sub)}</div>
 </div>
 ${body}
-<div style="margin:22px 0 10px">${button}</div>
 <div style="border-top:1px solid ${LINE};margin-top:18px;padding-top:10px;font-size:12px;color:${MUTED};line-height:1.6">
 ${esc(t.footer(s.name[lang]))}<br>
 <a href="${esc(links.manage)}" style="color:${MUTED}">${esc(t.manage)}</a> · <a href="${esc(links.stop)}" style="color:${MUTED}">${esc(t.stop)}</a>
 </div></div></body></html>`;
 
-  const subject = `${s.name[lang]}: ${title}`;
-  return { subject, html, text: textVersion(s, record, brief, lang, want, t, title, date, pageUrl, links) };
+  const subject = weekly ? `${s.name[lang]} — ${t.week}: ${title}` : `${s.name[lang]}: ${title}`;
+  return { subject, html, text: textVersion(site, records, lang, want, t, title, sub, links) };
 }
 
 // the plain-text part, for email programs that do not show HTML
-function textVersion(s, record, brief, lang, want, t, title, date, pageUrl, links) {
-  const out = [`${s.name[lang]} — ${title}`, `${date} · ${record.date}`, ""];
-  if (want.has("summary") && brief.summary) out.push(brief.summary, "");
-  if (want.has("questions")) (brief.questions || []).forEach((q, i) => {
-    out.push(`${i + 1}. ${q.title}`);
-    if (want.has("answers")) (q.answers || []).forEach((a, n) => out.push(`   ${t.answer(n)}: ${a.text}`));
-  });
-  out.push("", `${t.open}: ${pageUrl}`, "", `${t.manage}: ${links.manage}`, `${t.stop}: ${links.stop}`);
+function textVersion(site, records, lang, want, t, title, sub, links) {
+  const s = SITES[site];
+  const out = [`${s.name[lang]} — ${title}`, sub, ""];
+  for (const r of records) {
+    const brief = r[lang === "he" ? "hebrew" : "english"] || r.hebrew || r.english;
+    if (records.length > 1) out.push(`== ${s.title(r, lang)} (${r.date}) ==`);
+    if (want.has("summary") && brief.summary) out.push(brief.summary, "");
+    if (want.has("questions")) (brief.questions || []).forEach((q, i) => {
+      out.push(`${i + 1}. ${q.title}`);
+      if (want.has("answers")) (q.answers || []).forEach((a, n) => out.push(`   ${t.answer(n)}: ${a.text}`));
+    });
+    out.push(`${t.open}: ${pageOf(site, r, lang)}`, "");
+  }
+  out.push(`${t.manage}: ${links.manage}`, `${t.stop}: ${links.stop}`);
   return out.join("\n");
 }

@@ -2,7 +2,7 @@
 // email, choosing which sections they want (as in the sites' PDF dialog).
 //
 //   GET  /options?site=&lang=   the choices, for the sign-up dialog on the site
-//   POST /subscribe             {email, site, lang, sections} -> a confirmation email
+//   POST /subscribe             {email, site, lang, sections, freq} -> a confirmation email
 //   GET  /confirm?c=            the link in that email: the subscription starts
 //   GET  /m?t=  POST /m         change what you get (link in every email)
 //   GET  /u?t=  POST /u         unsubscribe (also the one-click List-Unsubscribe)
@@ -11,8 +11,10 @@
 // separate email the reader never sees.
 //
 // The cron runs hourly in the morning; once a site's brief for today (Israel
-// date) is up and it is SEND_HOUR or later in Israel, each confirmed reader of
-// that site gets it once. Sending is through a Gmail account over SMTP:
+// date) is up and it is SEND_HOUR or later in Israel, each confirmed daily
+// reader of that site gets it once. Weekly readers get one email on WEEK_DAY
+// (5 = Friday) with the seven days ending that day (Shabbat..Friday: on
+// פרשת השבוע, the whole parasha). Sending is through a Gmail account over SMTP:
 // GMAIL_USER (the address) and the secret GMAIL_APP_PASSWORD (a Google app password).
 
 import { SITES, optionsFor, cleanSections, keysOf } from "./sites.js";
@@ -33,8 +35,19 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sent (site TEXT NOT NULL, date TEXT NOT NULL, count INTEGER, at TEXT,
      PRIMARY KEY (site, date))`,
 ];
+// columns added after the first release: added to an existing database once (the error
+// when one is already there is expected)
+const LATER = [
+  "ALTER TABLE subs ADD COLUMN freq TEXT NOT NULL DEFAULT 'daily'",
+  "ALTER TABLE pending ADD COLUMN freq TEXT NOT NULL DEFAULT 'daily'",
+];
 let ready = null;
-const setup = (db) => (ready ??= db.batch(SCHEMA.map((q) => db.prepare(q))));
+const setup = (db) => (ready ??= (async () => {
+  await db.batch(SCHEMA.map((q) => db.prepare(q)));
+  for (const q of LATER) { try { await db.prepare(q).run(); } catch {} }
+})());
+const FREQS = ["daily", "weekly"];
+const freqOf = (v) => (v === "weekly" ? "weekly" : "daily");
 
 const now = () => new Date().toISOString();
 const token = () => [...crypto.getRandomValues(new Uint8Array(18))].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -59,7 +72,9 @@ const json = (data, status, origin) => new Response(JSON.stringify(data), {
 const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 const WORDS = {
   he: {
-    confirmed: "ההרשמה אושרה", confirmedText: (n) => `מעכשיו תקבלו את ${n} במייל בכל בוקר.`,
+    confirmed: "ההרשמה אושרה",
+    confirmedText: (n, f) => (f === "weekly" ? `מעכשיו תקבלו את ${n} במייל פעם בשבוע, ביום שישי בבוקר.` : `מעכשיו תקבלו את ${n} במייל בכל בוקר.`),
+    freq: "באיזו תדירות", freqs: { daily: "כל יום", weekly: "פעם בשבוע (ביום שישי, כל השבוע)" },
     badLink: "הקישור אינו בתוקף", badLinkText: "ייתכן שכבר השתמשתם בו או שעבר זמן רב. אפשר להירשם שוב מהאתר.",
     manage: "מה לקבל במייל", save: "שמירה", saved: "נשמר", lang: "שפה",
     stop: "הפסקת המיילים", stopAsk: (n) => `להפסיק לקבל את ${n} במייל?`, stopped: "הוסרת מהרשימה", stoppedText: (n) => `לא יישלחו אליכם עוד מיילים של ${n}.`,
@@ -68,7 +83,9 @@ const WORDS = {
     confirmButton: "אישור ההרשמה", back: "חזרה לאתר",
   },
   en: {
-    confirmed: "You're subscribed", confirmedText: (n) => `${n} will reach you by email every morning.`,
+    confirmed: "You're subscribed",
+    confirmedText: (n, f) => (f === "weekly" ? `${n} will reach you by email once a week, on Friday morning.` : `${n} will reach you by email every morning.`),
+    freq: "How often", freqs: { daily: "Every day", weekly: "Once a week (Friday, the whole week)" },
     badLink: "This link is no longer valid", badLinkText: "It may have been used already or be too old. You can sign up again on the site.",
     manage: "What to get by email", save: "Save", saved: "Saved", lang: "Language",
     stop: "Unsubscribe", stopAsk: (n) => `Stop getting ${n} by email?`, stopped: "You're unsubscribed", stoppedText: (n) => `You will get no more ${n} emails.`,
@@ -100,8 +117,11 @@ function choicesForm(sub, action) {
   const opts = optionsFor(sub.site, lang).map((o) => box(o.key, o.label) + (o.sub ? box(o.sub.key, o.sub.label, "sub") : "")).join("");
   const langs = [["he", "עברית"], ["en", "English"]].map(([v, t]) =>
     `<label><input type="radio" name="lang" value="${v}"${v === lang ? " checked" : ""}> ${t}</label>`).join("");
+  const freqs = FREQS.map((v) =>
+    `<label><input type="radio" name="freq" value="${v}"${v === freqOf(sub.freq) ? " checked" : ""}> ${esc(WORDS[lang].freqs[v])}</label>`).join("");
   return `<form method="post" action="${action}"><input type="hidden" name="t" value="${esc(sub.token)}">
-<fieldset>${opts}</fieldset><fieldset><legend>${esc(WORDS[lang].lang)}</legend>${langs}</fieldset>
+<fieldset>${opts}</fieldset><fieldset><legend>${esc(WORDS[lang].freq)}</legend>${freqs}</fieldset>
+<fieldset><legend>${esc(WORDS[lang].lang)}</legend>${langs}</fieldset>
 <button type="submit">${esc(WORDS[lang].save)}</button></form>`;
 }
 
@@ -111,6 +131,7 @@ async function subscribe(request, env, origin) {
   const email = String(body.email || "").trim().toLowerCase();
   const site = String(body.site || "");
   const lang = body.lang === "en" ? "en" : "he";
+  const freq = freqOf(body.freq);
   if (!SITES[site]) return json({ error: "unknown site" }, 400, origin);
   if (!EMAIL_RE.test(email) || email.length > 200) return json({ error: "email" }, 400, origin);
   const sections = cleanSections(site, body.sections);
@@ -122,8 +143,8 @@ async function subscribe(request, env, origin) {
   if (recent.n >= 3) return json({ error: "too many" }, 429, origin);
 
   const code = token();
-  await env.DB.prepare("INSERT INTO pending (code, email, site, lang, sections, created) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(code, email, site, lang, sections.join(","), now()).run();
+  await env.DB.prepare("INSERT INTO pending (code, email, site, lang, sections, freq, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(code, email, site, lang, sections.join(","), freq, now()).run();
   const name = SITES[site].name[lang];
   const w = WORDS[lang];
   const link = `${env.PUBLIC_URL}/confirm?c=${code}`;
@@ -152,14 +173,14 @@ async function confirm(url, env) {
     return page("he", WORDS.he.badLink, `<p>${WORDS.he.badLinkText}</p><p dir="ltr">${WORDS.en.badLink}. ${WORDS.en.badLinkText}</p>`, 404);
   const old = await env.DB.prepare("SELECT token FROM subs WHERE email = ? AND site = ?").bind(p.email, p.site).first();
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO subs (email, site, lang, sections, token, created) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT (email, site) DO UPDATE SET lang = excluded.lang, sections = excluded.sections`)
-      .bind(p.email, p.site, p.lang, p.sections, old ? old.token : token(), now()),
+    env.DB.prepare(`INSERT INTO subs (email, site, lang, sections, freq, token, created) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (email, site) DO UPDATE SET lang = excluded.lang, sections = excluded.sections, freq = excluded.freq`)
+      .bind(p.email, p.site, p.lang, p.sections, freqOf(p.freq), old ? old.token : token(), now()),
     env.DB.prepare("DELETE FROM pending WHERE code = ?").bind(p.code),
   ]);
   await notifyOwner(env, p, !!old);
   const w = WORDS[p.lang];
-  return page(p.lang, w.confirmed, `<p>${esc(w.confirmedText(SITES[p.site].name[p.lang]))}</p>${backLink(p.site, p.lang)}`);
+  return page(p.lang, w.confirmed, `<p>${esc(w.confirmedText(SITES[p.site].name[p.lang], freqOf(p.freq)))}</p>${backLink(p.site, p.lang)}`);
 }
 
 // a separate email to the site owner (NOTIFY_EMAIL) for every confirmed sign-up;
@@ -172,7 +193,7 @@ async function notifyOwner(env, p, changed) {
   const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM subs WHERE site = ?").bind(p.site).first();
   const lines = [
     `${changed ? "עדכון בחירות" : "נרשם/ה חדש/ה"}: ${site.name.he}`,
-    `מייל: ${p.email}`, `שפה: ${p.lang === "he" ? "עברית" : "English"}`, `חלקים: ${chosen}`,
+    `מייל: ${p.email}`, `תדירות: ${WORDS.he.freqs[freqOf(p.freq)]}`, `שפה: ${p.lang === "he" ? "עברית" : "English"}`, `חלקים: ${chosen}`,
     `מנויים ל${site.name.he} עכשיו: ${count.n}`,
   ];
   try {
@@ -184,7 +205,7 @@ async function notifyOwner(env, p, changed) {
 
 async function form(request) {
   const data = await request.formData();
-  return { t: data.get("t") || "", lang: data.get("lang"), s: data.getAll("s") };
+  return { t: data.get("t") || "", lang: data.get("lang"), freq: data.get("freq"), s: data.getAll("s") };
 }
 const byToken = (env, t) => env.DB.prepare("SELECT * FROM subs WHERE token = ?").bind(t).first();
 const gone = () => page("he", WORDS.he.badLink, `<p>${WORDS.he.badLinkText}</p><p dir="ltr">${WORDS.en.badLink}. ${WORDS.en.badLinkText}</p>`, 404);
@@ -196,7 +217,8 @@ async function manage(request, url, env) {
     if (!sub) return gone();
     const sections = cleanSections(sub.site, f.s);
     const lang = f.lang === "en" ? "en" : "he";
-    if (sections.length) await env.DB.prepare("UPDATE subs SET lang = ?, sections = ? WHERE token = ?").bind(lang, sections.join(","), sub.token).run();
+    if (sections.length) await env.DB.prepare("UPDATE subs SET lang = ?, sections = ?, freq = ? WHERE token = ?")
+      .bind(lang, sections.join(","), freqOf(f.freq), sub.token).run();
     const fresh = await byToken(env, f.t);
     return page(fresh.lang, WORDS[fresh.lang].saved, choicesForm(fresh, "/m") + stopLink(fresh));
   }
@@ -240,37 +262,72 @@ async function getJson(url) {
   return res.json();
 }
 
-/** Send today's brief of every site that has one and has not been sent yet. */
+// one reader's email: each choice of sections is drawn once per send; only the
+// reader's own links differ
+function messagesFor(env, site, subs, records, weekly) {
+  const drawn = new Map();
+  return subs.map((sub) => {
+    const manage = `${env.PUBLIC_URL}/m?t=${sub.token}`, stop = `${env.PUBLIC_URL}/u?t=${sub.token}`;
+    const key = `${sub.lang}|${sub.sections}`;
+    if (!drawn.has(key)) drawn.set(key, renderEmail(site, records, sub.lang, sub.sections.split(","),
+      { manage: "%%MANAGE%%", stop: "%%STOP%%" }, weekly));
+    const own = (text) => text.replaceAll("%%MANAGE%%", manage).replaceAll("%%STOP%%", stop);
+    const mail = drawn.get(key);
+    return { to: sub.email, subject: mail.subject, html: own(mail.html), text: own(mail.text), headers: {
+      "List-Unsubscribe": `<${stop}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } };
+  });
+}
+
+const addDays = (date, n) => new Date(Date.parse(date + "T12:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+
+/** Send today's brief to every site's daily readers, and on WEEK_DAY the week's
+    briefs to its weekly readers — each once. */
 export async function daily(env, when = new Date()) {
   await setup(env.DB);
   const { date, hour } = israel(when);
   const sendHour = Number(env.SEND_HOUR || 7);
+  const weekDay = Number(env.WEEK_DAY ?? 5);
+  const isWeekDay = new Date(date + "T12:00:00Z").getUTCDay() === weekDay;
   const report = [];
   if (hour < sendHour || hour > sendHour + 5) return report;   // too early, or the morning has passed
+  const sentAlready = async (key) => !!(await env.DB.prepare("SELECT 1 FROM sent WHERE site = ? AND date = ?").bind(key, date).first());
+  const claim = (key, n) => env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES (?, ?, ?, ?)").bind(key, date, n, now()).run();
+
   for (const [site, s] of Object.entries(SITES)) {
     try {
-      if (await env.DB.prepare("SELECT 1 FROM sent WHERE site = ? AND date = ?").bind(site, date).first()) continue;
-      const subs = (await env.DB.prepare("SELECT * FROM subs WHERE site = ?").bind(site).all()).results;
-      if (!subs.length) continue;
+      const all = (await env.DB.prepare("SELECT * FROM subs WHERE site = ?").bind(site).all()).results;
+      const dailySubs = all.filter((x) => freqOf(x.freq) === "daily");
+      const weeklySubs = isWeekDay ? all.filter((x) => freqOf(x.freq) === "weekly") : [];
+      const doDaily = dailySubs.length > 0 && !(await sentAlready(site));
+      const doWeekly = weeklySubs.length > 0 && !(await sentAlready(`${site}:week`));
+      if (!doDaily && !doWeekly) continue;
+
       const index = await getJson(`${s.url}/${s.index}`);
-      const day = index.days.find((d) => d.date === date && !d.file) || index.days.find((d) => d.date === date);
-      if (!day) { report.push(`${site}: no brief yet for ${date}`); continue; }
-      const record = await getJson(`${s.url}/${s.file(day)}`);
-      // claim the day first, so a crash part-way through never sends anyone the brief twice
-      await env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES (?, ?, ?, ?)").bind(site, date, subs.length, now()).run();
-      // each choice of sections is drawn once; only the reader's own links differ
-      const drawn = new Map();
-      const messages = subs.map((sub) => {
-        const manage = `${env.PUBLIC_URL}/m?t=${sub.token}`, stop = `${env.PUBLIC_URL}/u?t=${sub.token}`;
-        const key = `${sub.lang}|${sub.sections}`;
-        if (!drawn.has(key)) drawn.set(key, renderEmail(site, record, sub.lang, sub.sections.split(","), { manage: "%%MANAGE%%", stop: "%%STOP%%" }));
-        const own = (text) => text.replaceAll("%%MANAGE%%", manage).replaceAll("%%STOP%%", stop);
-        const mail = drawn.get(key);
-        return { to: sub.email, subject: mail.subject, html: own(mail.html), text: own(mail.text), headers: {
-          "List-Unsubscribe": `<${stop}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } };
-      });
-      await send(env, messages);
-      report.push(`${site}: sent ${messages.length} for ${date}`);
+      if (!index.days.some((d) => d.date === date)) { report.push(`${site}: no brief yet for ${date}`); continue; }
+      const files = new Map();   // each brief fetched once
+      const load = (day) => {
+        const file = s.file(day);
+        if (!files.has(file)) files.set(file, getJson(`${s.url}/${file}`));
+        return files.get(file);
+      };
+
+      if (doDaily) {
+        const day = index.days.find((d) => d.date === date && !d.file) || index.days.find((d) => d.date === date);
+        const record = await load(day);
+        // claim the day first, so a crash part-way through never sends anyone the brief twice
+        await claim(site, dailySubs.length);
+        await send(env, messagesFor(env, site, dailySubs, [record], false));
+        report.push(`${site}: sent ${dailySubs.length} daily for ${date}`);
+      }
+      if (doWeekly) {
+        const from = addDays(date, -6);
+        const days = index.days.filter((d) => d.date >= from && d.date <= date)
+          .sort((x, y) => x.date.localeCompare(y.date) || String(x.file || "").localeCompare(String(y.file || "")));
+        const records = await Promise.all(days.map(load));
+        await claim(`${site}:week`, weeklySubs.length);
+        await send(env, messagesFor(env, site, weeklySubs, records, true));
+        report.push(`${site}: sent ${weeklySubs.length} weekly (${records.length} days, ${from}..${date})`);
+      }
     } catch (error) {
       report.push(`${site}: ${error.message}`);
     }

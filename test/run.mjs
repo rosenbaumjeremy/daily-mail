@@ -122,7 +122,7 @@ ok(r.status === 502 && (await r.json()).detail.includes("535"), "a wrong app pas
 ok(!sql.prepare("SELECT 1 FROM pending WHERE email = 'late@example.com'").get(), "a failed sign-up does not count toward the limit");
 // many readers: one connection per 40 messages; a Gmail refusal is reported, not hidden
 setConnect(gmail);
-for (let i = 0; i < 85; i++) sql.prepare("INSERT INTO subs VALUES (?, 'tanach', 'he', 'summary', ?, '')").run(`r${i}@example.com`, `tok${i}`);
+for (let i = 0; i < 85; i++) sql.prepare("INSERT INTO subs (email, site, lang, sections, token, created) VALUES (?, 'tanach', 'he', 'summary', ?, '')").run(`r${i}@example.com`, `tok${i}`);
 outbox.splice(0); gmail.connections.length = 0;
 sql.prepare("DELETE FROM sent").run();
 report = await daily(env, new Date("2026-10-11T04:30:00Z"));
@@ -131,3 +131,44 @@ const limited = []; setConnect(fakeGmail({ user: env.GMAIL_USER, password: env.G
 sql.prepare("DELETE FROM sent").run();
 report = await daily(env, new Date("2026-10-11T04:30:00Z"));
 ok(limited.length === 10 && report.some((x) => x.includes("quota") && / of \d+ sent/.test(x)), "quota refusal reported: " + report.find((x) => x.includes("quota")));
+
+// weekly: Friday 2026-10-09 07:30 Israel; daily readers are not touched by the weekly send
+setConnect(gmail);
+sql.prepare("DELETE FROM subs").run(); sql.prepare("DELETE FROM sent").run(); outbox.splice(0);
+const weekly = [
+  ["wk-aliyah@example.com", "aliyah", "he", ["summary", "questions"]],
+  ["wk-mishna@example.com", "mishna", "en", ["summary", "topics"]],
+];
+for (const [email, site, lang, sections] of weekly) {
+  await signup({ email, site, lang, sections, freq: "weekly" });
+  r = await call("/confirm?c=" + code(outbox.find((m) => m.to[0] === email)));
+  ok((await r.text()).includes(lang === "he" ? "פעם בשבוע" : "once a week"), `weekly confirmation page for ${email}`);
+}
+ok(outbox.filter((m) => m.to[0] === "owner@example.com").every((m) => m.text.includes("פעם בשבוע")), "owner notice says weekly");
+await signup({ email: "day@example.com", site: "aliyah", sections: ["summary"] });
+await call("/confirm?c=" + code(outbox.find((m) => m.to[0] === "day@example.com")));
+outbox.splice(0);
+report = await daily(env, new Date("2026-10-08T04:30:00Z"));   // Thursday
+ok(!outbox.some((m) => m.to[0].startsWith("wk-")), "no weekly email on Thursday");
+outbox.splice(0);
+report = await daily(env, new Date("2026-10-09T04:30:00Z"));   // Friday
+console.log(report.join("\n"));
+const wk = Object.fromEntries(outbox.map((m) => [m.to[0], m]));
+ok(wk["day@example.com"] && !wk["day@example.com"].subject.includes("סיכום שבועי"), "daily reader still gets just Friday");
+const wa = wk["wk-aliyah@example.com"];
+ok(wa && wa.subject.includes("סיכום שבועי") && wa.subject.includes("פרשת"), "weekly aliyah subject: " + (wa && wa.subject));
+const aliyot = (wa.html.match(/<h2 style="margin:8px 0 2px/g) || []).length;
+ok(aliyot >= 5, `weekly aliyah email holds ${aliyot} days`);
+ok(wa.html.includes("סיכום העלייה") && !wa.html.includes(">תירוץ א<"), "weekly keeps the reader's sections only");
+const wm = wk["wk-mishna@example.com"];
+ok(wm && (wm.html.match(/Mishnah Berakhot \d/g) || []).length >= 2 && wm.html.includes("Key terms"), "weekly mishna in English, its perakim");
+writeFileSync(here + "out/weekly-aliyah.html", wa.html);
+console.log("weekly aliyah size:", Math.round(wa.html.length / 1024), "KB");
+outbox.splice(0);
+await daily(env, new Date("2026-10-09T05:30:00Z"));
+ok(!outbox.some((m) => m.to[0].startsWith("wk-")), "weekly not sent twice");
+// manage page switches frequency
+const wtok = wa.headers["List-Unsubscribe"].match(/t=([0-9a-f]+)/)[1];
+const fd2 = new FormData(); fd2.append("t", wtok); fd2.append("lang", "he"); fd2.append("freq", "daily"); fd2.append("s", "summary");
+r = await call("/m", { method: "POST", body: fd2 });
+ok((await r.text()).includes('value="daily" checked'), "manage page switches weekly to daily");

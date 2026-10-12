@@ -3,7 +3,8 @@
 Readers of the study sites (פרשת השבוע, שניים ליום, משנה יומית) press **במייל / Email**
 beside PDF and Print, choose which sections they want (the same choices as the PDF
 dialog), the language and their address, and confirm from an email. Each morning
-they get that day's brief with only those sections. Every email has links to
+they get that day's brief with only those sections — or, if they chose weekly, one
+email on Friday morning with the week's briefs (Shabbat..Friday). Every email has links to
 change the choices or unsubscribe (plus a one-click List-Unsubscribe header).
 Every confirmed sign-up is also reported to `NOTIFY_EMAIL` (you) in a separate
 email; the reader is not copied and never sees it.

@@ -41,6 +41,11 @@ export const SITES = {
     title: (r, lang) => lang === "he"
       ? `פרשת ${r.reading.he} — ${r.aliyah_name.he}`
       : `${r.reading.en} — ${r.aliyah_name.en}`,
+    // a week of aliyot is one parasha (Shabbat Rishon .. Friday Shevi'i)
+    weekTitle: (rs, lang) => {
+      const names = [...new Set(rs.map((r) => (lang === "he" ? `פרשת ${r.reading.he}` : r.reading.en)))];
+      return names.join(" / ");
+    },
     link: (r, lang) => {
       const p = new URLSearchParams({ lang: lang === "he" ? "hebrew" : "english", p: r.reading.slugs[0] });
       if (r.reading.slugs.length > 1) p.set("r", r.reading.slugs.join("+"));

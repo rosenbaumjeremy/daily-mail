@@ -18,6 +18,8 @@
     "GMAIL_USER": "dailylearningparshanachmishna@gmail.com",
     "FROM_NAME": "לימוד יומי",
     "SEND_HOUR": "7",
+    // weekly readers get the 7 days ending on this weekday: 0 = Sunday .. 5 = Friday
+    "WEEK_DAY": "5",
     // gets a separate note for every confirmed sign-up (readers never see it)
     "NOTIFY_EMAIL": "rosenbaum.jeremy@gmail.com"
   }
