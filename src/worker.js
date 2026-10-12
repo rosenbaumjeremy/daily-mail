@@ -420,7 +420,11 @@ export default {
       if (url.pathname === "/confirm") return await confirm(url, env);
       if (url.pathname === "/m") return await manage(request, url, env);
       if (url.pathname === "/u") return await unsubscribe(request, url, env);
-      if (url.pathname === "/preview" && request.method === "POST") return await preview(url, env);
+      if (url.pathname === "/preview" && request.method === "POST") {
+        // the owner's own test: say what failed (never includes the password)
+        try { return await preview(url, env); }
+        catch (error) { console.error("preview:", error.stack || error.message); return new Response(`preview failed: ${error.message}`.slice(0, 500), { status: 500 }); }
+      }
       if (url.pathname === "/") return new Response("daily-mail", { headers: { "Content-Type": "text/plain" } });
       return new Response("not found", { status: 404 });
     } catch (error) {
