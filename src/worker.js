@@ -10,8 +10,9 @@
 // Every confirmed sign-up is also reported to NOTIFY_EMAIL (the owner) in a
 // separate email the reader never sees.
 //
-// The cron runs hourly in the morning; once a site's brief for today (Israel
-// date) is up and it is SEND_HOUR or later in Israel, each confirmed daily
+// The cron runs hourly in the morning and at night; once a site's brief for a
+// day is up and that day is due (SEND_HOUR in Israel; on Shabbat and Yom Tov
+// HOLY_HOUR, 21:00, after the last holy day in a row), each confirmed daily
 // reader of that site gets it once. Weekly readers get one email on WEEK_DAY
 // (5 = Friday) with the seven days ending that day (Shabbat..Friday: on
 // פרשת השבוע, the whole parasha). Sending is through a Gmail account over SMTP:
@@ -73,8 +74,8 @@ const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'se
 const WORDS = {
   he: {
     confirmed: "ההרשמה אושרה",
-    confirmedText: (n, f) => (f === "weekly" ? `מעכשיו תקבלו את ${n} במייל פעם בשבוע, ביום שישי בבוקר.` : `מעכשיו תקבלו את ${n} במייל בכל בוקר.`),
-    freq: "באיזו תדירות", freqs: { daily: "כל יום", weekly: "פעם בשבוע (ביום שישי, כל השבוע)" },
+    confirmedText: (n, f) => (f === "weekly" ? `מעכשיו תקבלו את ${n} במייל פעם בשבוע, ביום שישי בבוקר.` : `מעכשיו תקבלו את ${n} במייל בכל בוקר (בשבת ובחג: ב-21:00).`),
+    freq: "באיזו תדירות", freqs: { daily: "כל יום (בשבת ובחג: ב-21:00)", weekly: "פעם בשבוע (ביום שישי, כל השבוע)" },
     badLink: "הקישור אינו בתוקף", badLinkText: "ייתכן שכבר השתמשתם בו או שעבר זמן רב. אפשר להירשם שוב מהאתר.",
     manage: "מה לקבל במייל", save: "שמירה", saved: "נשמר", lang: "שפה",
     stop: "הפסקת המיילים", stopAsk: (n) => `להפסיק לקבל את ${n} במייל?`, stopped: "הוסרת מהרשימה", stoppedText: (n) => `לא יישלחו אליכם עוד מיילים של ${n}.`,
@@ -84,8 +85,8 @@ const WORDS = {
   },
   en: {
     confirmed: "You're subscribed",
-    confirmedText: (n, f) => (f === "weekly" ? `${n} will reach you by email once a week, on Friday morning.` : `${n} will reach you by email every morning.`),
-    freq: "How often", freqs: { daily: "Every day", weekly: "Once a week (Friday, the whole week)" },
+    confirmedText: (n, f) => (f === "weekly" ? `${n} will reach you by email once a week, on Friday morning.` : `${n} will reach you by email every morning (on Shabbat and Yom Tov: at 9 pm).`),
+    freq: "How often", freqs: { daily: "Every day (Shabbat and Yom Tov: at 9 pm)", weekly: "Once a week (Friday, the whole week)" },
     badLink: "This link is no longer valid", badLinkText: "It may have been used already or be too old. You can sign up again on the site.",
     manage: "What to get by email", save: "Save", saved: "Saved", lang: "Language",
     stop: "Unsubscribe", stopAsk: (n) => `Stop getting ${n} by email?`, stopped: "You're unsubscribed", stoppedText: (n) => `You will get no more ${n} emails.`,
@@ -280,30 +281,57 @@ function messagesFor(env, site, subs, records, weekly) {
 
 const addDays = (date, n) => new Date(Date.parse(date + "T12:00:00Z") + n * 864e5).toISOString().slice(0, 10);
 
-/** Send today's brief to every site's daily readers, and on WEEK_DAY the week's
-    briefs to its weekly readers — each once. */
+// Shabbat and Yom Tov (Israel: one day each, Rosh Hashana two)
+const HEBREW = new Intl.DateTimeFormat("en-u-ca-hebrew", { timeZone: "UTC", day: "numeric", month: "long" });
+const YOM_TOV = new Set(["1 Tishri", "2 Tishri", "10 Tishri", "15 Tishri", "22 Tishri", "15 Nisan", "21 Nisan", "6 Sivan"]);
+export const holy = (date) => {
+  const d = new Date(date + "T12:00:00Z");
+  return d.getUTCDay() === 6 || YOM_TOV.has(HEBREW.format(d));
+};
+
+// When a day's email goes out, in Israel time: SEND_HOUR that morning, or on
+// Shabbat / Yom Tov at HOLY_HOUR (21:00) on the last of the holy days in a row
+// (Rosh Hashana, or Yom Tov next to Shabbat), so nothing arrives while it is holy.
+export function dueOf(date, env) {
+  if (!holy(date)) return { date, hour: Number(env.SEND_HOUR || 7) };
+  let end = date;
+  while (holy(addDays(end, 1))) end = addDays(end, 1);
+  return { date: end, hour: Number(env.HOLY_HOUR || 21) };
+}
+// Israel date + hour as one count of hours, to compare and subtract
+const hours = ({ date, hour }) => Date.parse(date + "T00:00:00Z") / 36e5 + hour;
+const LATE = 6;   // a run more than this many hours after the due time sends nothing (stale)
+
+/** Send each site's due briefs: to daily readers, each day's brief once; to
+    weekly readers, on WEEK_DAY the 7 days ending that day, once. */
 export async function daily(env, when = new Date()) {
   await setup(env.DB);
-  const { date, hour } = israel(when);
-  const sendHour = Number(env.SEND_HOUR || 7);
+  const here = israel(when);
   const weekDay = Number(env.WEEK_DAY ?? 5);
-  const isWeekDay = new Date(date + "T12:00:00Z").getUTCDay() === weekDay;
   const report = [];
-  if (hour < sendHour || hour > sendHour + 5) return report;   // too early, or the morning has passed
-  const sentAlready = async (key) => !!(await env.DB.prepare("SELECT 1 FROM sent WHERE site = ? AND date = ?").bind(key, date).first());
-  const claim = (key, n) => env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES (?, ?, ?, ?)").bind(key, date, n, now()).run();
+  const isDue = (date) => {
+    const late = hours(here) - hours(dueOf(date, env));
+    return late >= 0 && late < LATE;
+  };
+  // the days that may be due now: the last few, oldest first
+  const recent = [3, 2, 1, 0].map((n) => addDays(here.date, -n));
+  const dueDays = recent.filter(isDue);
+  const weekEnd = recent.find((d) => new Date(d + "T12:00:00Z").getUTCDay() === weekDay && isDue(d));
+  if (!dueDays.length && !weekEnd) return report;
+  const sentAlready = async (key, date) => !!(await env.DB.prepare("SELECT 1 FROM sent WHERE site = ? AND date = ?").bind(key, date).first());
+  const claim = (key, date, n) => env.DB.prepare("INSERT INTO sent (site, date, count, at) VALUES (?, ?, ?, ?)").bind(key, date, n, now()).run();
 
   for (const [site, s] of Object.entries(SITES)) {
     try {
       const all = (await env.DB.prepare("SELECT * FROM subs WHERE site = ?").bind(site).all()).results;
       const dailySubs = all.filter((x) => freqOf(x.freq) === "daily");
-      const weeklySubs = isWeekDay ? all.filter((x) => freqOf(x.freq) === "weekly") : [];
-      const doDaily = dailySubs.length > 0 && !(await sentAlready(site));
-      const doWeekly = weeklySubs.length > 0 && !(await sentAlready(`${site}:week`));
-      if (!doDaily && !doWeekly) continue;
+      const weeklySubs = weekEnd ? all.filter((x) => freqOf(x.freq) === "weekly") : [];
+      const days = [];
+      if (dailySubs.length) for (const d of dueDays) if (!(await sentAlready(site, d))) days.push(d);
+      const doWeekly = weeklySubs.length > 0 && !(await sentAlready(`${site}:week`, weekEnd));
+      if (!days.length && !doWeekly) continue;
 
       const index = await getJson(`${s.url}/${s.index}`);
-      if (!index.days.some((d) => d.date === date)) { report.push(`${site}: no brief yet for ${date}`); continue; }
       const files = new Map();   // each brief fetched once
       const load = (day) => {
         const file = s.file(day);
@@ -311,22 +339,24 @@ export async function daily(env, when = new Date()) {
         return files.get(file);
       };
 
-      if (doDaily) {
+      for (const date of days) {
         const day = index.days.find((d) => d.date === date && !d.file) || index.days.find((d) => d.date === date);
+        if (!day) { report.push(`${site}: no brief yet for ${date}`); continue; }
         const record = await load(day);
         // claim the day first, so a crash part-way through never sends anyone the brief twice
-        await claim(site, dailySubs.length);
+        await claim(site, date, dailySubs.length);
         await send(env, messagesFor(env, site, dailySubs, [record], false));
         report.push(`${site}: sent ${dailySubs.length} daily for ${date}`);
       }
       if (doWeekly) {
-        const from = addDays(date, -6);
-        const days = index.days.filter((d) => d.date >= from && d.date <= date)
+        if (!index.days.some((d) => d.date === weekEnd)) { report.push(`${site}: no brief yet for ${weekEnd} (weekly)`); continue; }
+        const from = addDays(weekEnd, -6);
+        const week = index.days.filter((d) => d.date >= from && d.date <= weekEnd)
           .sort((x, y) => x.date.localeCompare(y.date) || String(x.file || "").localeCompare(String(y.file || "")));
-        const records = await Promise.all(days.map(load));
-        await claim(`${site}:week`, weeklySubs.length);
+        const records = await Promise.all(week.map(load));
+        await claim(`${site}:week`, weekEnd, weeklySubs.length);
         await send(env, messagesFor(env, site, weeklySubs, records, true));
-        report.push(`${site}: sent ${weeklySubs.length} weekly (${records.length} days, ${from}..${date})`);
+        report.push(`${site}: sent ${weeklySubs.length} weekly (${records.length} days, ${from}..${weekEnd})`);
       }
     } catch (error) {
       report.push(`${site}: ${error.message}`);

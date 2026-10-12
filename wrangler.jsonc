@@ -7,8 +7,9 @@
   "workers_dev": true,
   // logs in the dashboard (the worker's Observability tab)
   "observability": { "enabled": true },
-  // every hour from 03:15 to 09:15 UTC; the worker itself sends at SEND_HOUR Israel time
-  "triggers": { "crons": ["15 3-9 * * *"] },
+  // mornings 03:15-09:15 UTC, and 18:15 + 19:15 UTC (21:15 Israel in summer / winter)
+  // for Shabbat and Yom Tov; the worker itself decides what is due (SEND_HOUR, HOLY_HOUR)
+  "triggers": { "crons": ["15 3-9,18,19 * * *"] },
   "d1_databases": [
     { "binding": "DB", "database_name": "daily-mail", "database_id": "43ae5629-e739-490f-afec-44157d1cdb6b" }
   ],
@@ -18,6 +19,8 @@
     "GMAIL_USER": "dailylearningparshanachmishna@gmail.com",
     "FROM_NAME": "לימוד יומי",
     "SEND_HOUR": "7",
+    // on Shabbat and Yom Tov the day's email waits until this hour (Israel) of the last holy day
+    "HOLY_HOUR": "21",
     // weekly readers get the 7 days ending on this weekday: 0 = Sunday .. 5 = Friday
     "WEEK_DAY": "5",
     // gets a separate note for every confirmed sign-up (readers never see it)

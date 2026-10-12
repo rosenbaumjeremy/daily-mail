@@ -4,7 +4,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import worker, { daily, setConnect } from "../src/worker.js";
+import worker, { daily, setConnect, dueOf, holy } from "../src/worker.js";
 import { fakeGmail } from "./fake-gmail.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -172,3 +172,28 @@ const wtok = wa.headers["List-Unsubscribe"].match(/t=([0-9a-f]+)/)[1];
 const fd2 = new FormData(); fd2.append("t", wtok); fd2.append("lang", "he"); fd2.append("freq", "daily"); fd2.append("s", "summary");
 r = await call("/m", { method: "POST", body: fd2 });
 ok((await r.text()).includes('value="daily" checked'), "manage page switches weekly to daily");
+
+// Shabbat and Yom Tov: the day's email waits until 21:00 of the last holy day in a row
+const due = (d) => { const x = dueOf(d, env); return `${x.date} ${x.hour}`; };
+ok(due("2026-10-11") === "2026-10-11 7", "a weekday: 07:00");
+ok(due("2026-10-10") === "2026-10-10 21", "Shabbat: 21:00 that night");
+ok(due("2026-09-12") === "2026-09-13 21" && due("2026-09-13") === "2026-09-13 21", "Rosh Hashana 5787 (Sat+Sun): both at 21:00 on the second day");
+ok(due("2026-09-21") === "2026-09-21 21", "Yom Kippur: 21:00");
+ok(due("2027-06-11") === "2027-06-12 21", "Shavuot on Friday, then Shabbat: Saturday 21:00");
+ok(!holy("2026-09-27") && holy("2026-09-26") && holy("2026-10-03"), "Sukkot 1 and Shemini Atzeret are Yom Tov, chol hamoed is not");
+ok(holy("2027-04-22") && holy("2027-04-28") && !holy("2027-04-23"), "Pesach 1 and 7 in Israel");
+setConnect(gmail);
+sql.prepare("DELETE FROM subs").run(); sql.prepare("DELETE FROM sent").run(); outbox.splice(0);
+await signup({ email: "shabbat@example.com", site: "tanach", sections: ["summary"] });
+await call("/confirm?c=" + code(outbox.find((m) => m.to[0] === "shabbat@example.com")));
+outbox.splice(0);
+await daily(env, new Date("2026-10-10T04:30:00Z"));    // Shabbat 07:30
+ok(outbox.length === 0, "nothing on Shabbat morning");
+await daily(env, new Date("2026-10-10T15:15:00Z"));    // Shabbat 18:15
+ok(outbox.length === 0, "nothing before 21:00 on Shabbat");
+report = await daily(env, new Date("2026-10-10T18:15:00Z"));    // motzei Shabbat 21:15
+ok(outbox.length === 1 && outbox[0].subject.includes("יהושע"), "Shabbat's brief at 21:15: " + report.join("; "));
+outbox.splice(0);
+await daily(env, new Date("2026-10-10T19:15:00Z"));
+await daily(env, new Date("2026-10-11T04:30:00Z"));    // Sunday 07:30: Sunday's brief only
+ok(outbox.length === 1 && outbox[0].text.includes("2026-10-11"), "Sunday morning: only Sunday's brief");
