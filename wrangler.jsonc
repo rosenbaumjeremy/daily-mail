@@ -13,7 +13,7 @@
   "vars": {
     "PUBLIC_URL": "https://daily-mail.dailylearning.workers.dev",
     // the Gmail account the emails come from, and the name readers see
-    "GMAIL_USER": "REPLACE_WITH_THE_NEW_GMAIL_ADDRESS",
+    "GMAIL_USER": "dailylearningparshanachmishna@gmail.com",
     "FROM_NAME": "לימוד יומי",
     "SEND_HOUR": "7",
     // gets a separate note for every confirmed sign-up (readers never see it)
