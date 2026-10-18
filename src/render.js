@@ -16,11 +16,13 @@ const TEXT = {
     askedBy: "שואלים", answer: (i) => `תירוץ ${"אבגדהוזחטי"[i] || i + 1}`, why: "למה זה חשוב",
     synthesis: "סינתזה שלנו", open: "לקריאה באתר", week: "סיכום שבועי", manage: "שינוי הבחירות", stop: "הפסקת המיילים",
     footer: (name) => `קיבלתם מייל זה כי נרשמתם ל${name} במייל.`,
+    onceFooter: "שלחנו את המייל הזה פעם אחת, לבקשתכם באתר. לא יישלחו מיילים נוספים.",
   },
   en: {
     askedBy: "Asked by", answer: (i) => `Answer ${i + 1}`, why: "Why it matters",
     synthesis: "our synthesis", open: "Read it on the site", week: "This week", manage: "Change what you get", stop: "Unsubscribe",
     footer: (name) => `You get this email because you signed up for ${name} by email.`,
+    onceFooter: "You asked for this one email on the site. No more emails will be sent.",
   },
 };
 
@@ -97,7 +99,8 @@ const button = (url, text) => `<a href="${esc(url)}" style="display:inline-block
 
 /** site: key of SITES; records: the brief files (one for a daily email, the
     week's for a weekly one, oldest first); lang "he" | "en"; sections: chosen
-    keys; links: { manage, stop } URLs for this reader; weekly: true for the week. */
+    keys; links: { manage, stop } URLs for this reader, or { once: true } for a
+    single email sent on request (no links); weekly: true for the week. */
 export function renderEmail(site, records, lang, sections, links, weekly = false) {
   const s = SITES[site];
   const t = TEXT[lang];
@@ -130,8 +133,8 @@ ${sectionsHtml(site, r, lang, want, t, true)}</div>`).join("\n");
 </div>
 ${body}
 <div style="border-top:1px solid ${LINE};margin-top:18px;padding-top:10px;font-size:12px;color:${MUTED};line-height:1.6">
-${esc(t.footer(s.name[lang]))}<br>
-<a href="${esc(links.manage)}" style="color:${MUTED}">${esc(t.manage)}</a> · <a href="${esc(links.stop)}" style="color:${MUTED}">${esc(t.stop)}</a>
+${links.once ? esc(t.onceFooter) : `${esc(t.footer(s.name[lang]))}<br>
+<a href="${esc(links.manage)}" style="color:${MUTED}">${esc(t.manage)}</a> · <a href="${esc(links.stop)}" style="color:${MUTED}">${esc(t.stop)}</a>`}
 </div></div></body></html>`;
 
   const subject = weekly ? `${s.name[lang]} — ${t.week}: ${title}` : `${s.name[lang]}: ${title}`;
@@ -152,6 +155,7 @@ function textVersion(site, records, lang, want, t, title, sub, links) {
     });
     out.push(`${t.open}: ${pageOf(site, r, lang)}`, "");
   }
-  out.push(`${t.manage}: ${links.manage}`, `${t.stop}: ${links.stop}`);
+  if (links.once) out.push(t.onceFooter);
+  else out.push(`${t.manage}: ${links.manage}`, `${t.stop}: ${links.stop}`);
   return out.join("\n");
 }

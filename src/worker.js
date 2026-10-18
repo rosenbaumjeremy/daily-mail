@@ -2,7 +2,8 @@
 // email, choosing which sections they want (as in the sites' PDF dialog).
 //
 //   GET  /options?site=&lang=   the choices, for the sign-up dialog on the site
-//   POST /subscribe             {email, site, lang, sections, freq} -> a confirmation email
+//   POST /subscribe             {email, site, lang, sections, freq} -> a confirmation email;
+//                               freq "once": today's brief right away, no subscription
 //   GET  /confirm?c=            the link in that email: the subscription starts
 //   GET  /m?t=  POST /m         change what you get (link in every email)
 //   GET  /u?t=  POST /u         unsubscribe (also the one-click List-Unsubscribe)
@@ -36,6 +37,7 @@ const SCHEMA = [
      lang TEXT NOT NULL, sections TEXT NOT NULL, created TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS sent (site TEXT NOT NULL, date TEXT NOT NULL, count INTEGER, at TEXT,
      PRIMARY KEY (site, date))`,
+  `CREATE TABLE IF NOT EXISTS once (email TEXT NOT NULL, site TEXT NOT NULL, created TEXT NOT NULL)`,
 ];
 // columns added after the first release: added to an existing database once (the error
 // when one is already there is expected)
@@ -138,6 +140,7 @@ async function subscribe(request, env, origin) {
   if (!EMAIL_RE.test(email) || email.length > 200) return json({ error: "email" }, 400, origin);
   const sections = cleanSections(site, body.sections);
   if (!sections.length) return json({ error: "sections" }, 400, origin);
+  if (body.freq === "once") return sendOnce(env, origin, { email, site, lang, sections });
 
   // at most 3 confirmation emails a day to one address, so the form cannot be used to flood someone
   const day = new Date(Date.now() - 864e5).toISOString();
@@ -167,6 +170,35 @@ async function subscribe(request, env, origin) {
     return json({ error: "send", detail: error.message.slice(0, 200) }, 502, origin);
   }
   return json({ ok: true }, 200, origin);
+}
+
+// "Just this time": the latest brief up to today (Israel), sent now with the
+// reader's sections; nothing is stored but the send itself, for the limits. Sent
+// without a confirmation step, so at most 3 a day to one address and ONCE_CAP
+// a day in all (Gmail allows ~500 a day, shared with the daily emails).
+const ONCE_CAP = 100;
+async function sendOnce(env, origin, { email, site, lang, sections }) {
+  const day = new Date(Date.now() - 864e5).toISOString();
+  const mine = await env.DB.prepare("SELECT COUNT(*) AS n FROM once WHERE email = ? AND created > ?").bind(email, day).first();
+  const all = await env.DB.prepare("SELECT COUNT(*) AS n FROM once WHERE created > ?").bind(day).first();
+  if (mine.n >= 3 || all.n >= ONCE_CAP) return json({ error: "too many" }, 429, origin);
+
+  const s = SITES[site];
+  const today = israel().date;
+  const index = await getJson(env, site, `${s.url}/${s.index}`);
+  const latest = index.days.filter((d) => d.date <= today).map((d) => d.date).sort().pop();
+  if (!latest) return json({ error: "none" }, 404, origin);
+  const entry = index.days.find((d) => d.date === latest && !d.file) || index.days.find((d) => d.date === latest);
+  const record = await getJson(env, site, `${s.url}/${s.file(entry)}`);
+  const mail = renderEmail(site, [record], lang, sections, { once: true }, false);
+  try {
+    await send(env, [{ to: email, subject: mail.subject, html: mail.html, text: mail.text }]);
+  } catch (error) {
+    console.error("once:", error.message);
+    return json({ error: "send", detail: error.message.slice(0, 200) }, 502, origin);
+  }
+  await env.DB.prepare("INSERT INTO once (email, site, created) VALUES (?, ?, ?)").bind(email, site, now()).run();
+  return json({ ok: true, once: true, date: latest }, 200, origin);
 }
 
 async function confirm(url, env) {
@@ -370,6 +402,7 @@ export async function daily(env, when = new Date()) {
     }
   }
   await env.DB.prepare("DELETE FROM pending WHERE created < ?").bind(new Date(Date.now() - 8 * 864e5).toISOString()).run();
+  await env.DB.prepare("DELETE FROM once WHERE created < ?").bind(new Date(Date.now() - 2 * 864e5).toISOString()).run();
   return report;
 }
 

@@ -82,6 +82,16 @@ for (let i = 0; i < 3; i++) await signup({ email: "flood@example.com", site: "al
 ok((await signup({ email: "flood@example.com", site: "aliyah", sections: ["summary"] })).status === 429, "4th confirmation in a day refused");
 outbox.splice(0);
 
+// "just this time": the latest brief sent at once, nothing stored as a subscription
+r = await signup({ email: "once@example.com", site: "tanach", lang: "en", sections: ["summary", "questions"], freq: "once" });
+body = await r.json();
+ok(r.status === 200 && body.once && outbox.length === 1 && outbox[0].to[0] === "once@example.com", `one-time email sent (${body.date})`);
+ok(outbox[0].html.includes("No more emails will be sent") && !outbox[0].html.includes("/u?t=") && !outbox[0].headers?.["List-Unsubscribe"], "one-time email has no subscription links");
+ok(!sql.prepare("SELECT 1 FROM subs WHERE email = 'once@example.com'").get() && !sql.prepare("SELECT 1 FROM pending WHERE email = 'once@example.com'").get(), "one-time is not a subscription");
+for (let i = 0; i < 2; i++) await signup({ email: "once@example.com", site: "tanach", sections: ["summary"], freq: "once" });
+ok((await signup({ email: "once@example.com", site: "tanach", sections: ["summary"], freq: "once" })).status === 429, "4th one-time email in a day refused");
+outbox.splice(0);
+
 // the morning send: 2026-10-11 07:30 Israel (UTC+3) = 04:30 UTC
 ok((await daily(env, new Date("2026-10-11T02:30:00Z"))).length === 0, "nothing before 07:00 Israel");
 let report = await daily(env, new Date("2026-10-11T04:30:00Z"));
